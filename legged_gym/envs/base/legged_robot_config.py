@@ -126,9 +126,21 @@ class LeggedRobotCfg(BaseConfig):
 
         randomize_base_mass = False
         added_mass_range = [-2., 3.]
+        
+        randomize_leg_mass = True
+        added_leg_mass_range = [-0.2,0.2]
+        factor_leg_mass_range = [0.9,1.1]
+        
+        randomize_leg_com = True
+        added_leg_com_range = [-0.015, 0.015]
+        
+        randomize_base_com = True
+        added_com_range = [-0.05, 0.05]
+
         push_robots = True
         push_interval_s = 7
         max_push_vel_xy = 2.
+
         randomize_Kp_factor = True
         Kp_factor_range = [0.8, 1.2]
         
@@ -140,6 +152,9 @@ class LeggedRobotCfg(BaseConfig):
 
         randomize_motor_strength = True
         motor_strength_range = [0.8, 1.2]
+
+        randomize_action_delay = False
+        delay_ms_range = [0, 20] # ms
     class rewards:
         class scales:
             termination = -0.0
@@ -158,7 +173,7 @@ class LeggedRobotCfg(BaseConfig):
 
             # feet_air_time =  1.0
             hip_default = -1
-            trot_gait = 0.1
+            # trot_gait = 0.1
             collision = -1.
             feet_stumble = -0.0 
             action_rate = -0.01

@@ -87,7 +87,12 @@ class LeggedRobot(BaseTask):
         # step physics and render each frame
         self.render()
         for _ in range(self.cfg.control.decimation):
-            self.torques = self._compute_torques(self.actions).view(self.torques.shape)
+            if self.cfg.domain_rand.randomize_action_delay:
+                self.action_fifo = torch.cat((self.actions.unsqueeze(1), self.action_fifo[:, :-1, :]), dim=1)
+                self.torques = self._compute_torques(self.action_fifo[torch.arange(self.num_envs), self.action_delay_idx, :]
+                                                    ).view(self.torques.shape)
+            else:
+                self.torques = self._compute_torques(self.actions).view(self.torques.shape)
             self.gym.set_dof_actuation_force_tensor(self.sim, gymtorch.unwrap_tensor(self.torques))
             self.gym.simulate(self.sim)
             if self.device == 'cpu':
@@ -341,10 +346,68 @@ class LeggedRobot(BaseTask):
         #         print(f"Mass of body {i}: {p.mass} (before randomization)")
         #     print(f"Total mass {sum} (before randomization)")
         # randomize base mass
+        # randomize leg mass
+        if self.cfg.domain_rand.randomize_leg_mass:
+            rng_leg = self.cfg.domain_rand.added_leg_mass_range
+            factor_leg_mass = self.cfg.domain_rand.factor_leg_mass_range
+            rand_leg_mass = np.random.uniform(factor_leg_mass[0], factor_leg_mass[1], size=(1, ))
+            for i in range(len(props)):
+                mess = np.random.uniform(factor_leg_mass[0], factor_leg_mass[1])
+                props[i].mass *= mess
+        else:
+            rand_leg_mass = np.zeros((1, ))
+
+        # randomize leg com
+        if self.cfg.domain_rand.randomize_leg_com:
+            rng_leg_com = self.cfg.domain_rand.added_leg_com_range
+            rand_leg_com = np.random.uniform(rng_leg_com[0], rng_leg_com[1], size=(3, ))
+            factor_leg_mass = self.cfg.domain_rand.factor_leg_mass_range
+
+            for i in range(len(props)):
+                props[i].inertia.x.x *= np.random.uniform(factor_leg_mass[0], factor_leg_mass[1])
+                props[i].inertia.y.y *= np.random.uniform(factor_leg_mass[0], factor_leg_mass[1])
+                props[i].inertia.z.z *= np.random.uniform(factor_leg_mass[0], factor_leg_mass[1])
+                props[i].com += gymapi.Vec3(*rand_leg_com)
+        else:
+            rand_leg_com = np.zeros((3))
+
         if self.cfg.domain_rand.randomize_base_mass:
             rng = self.cfg.domain_rand.added_mass_range
+            rand_mass = np.random.uniform(rng[0], rng[1], size=(1, ))
             props[0].mass += np.random.uniform(rng[0], rng[1])
-        return props
+        else:
+            rand_mass = np.zeros((1, ))
+        if self.cfg.domain_rand.randomize_base_com:
+            rng_com = self.cfg.domain_rand.added_com_range
+            rand_com = np.random.uniform(rng_com[0], rng_com[1], size=(3, ))
+            props[0].com += gymapi.Vec3(*rand_com)
+        else:
+            rand_com = np.zeros(3)
+        if self.cfg.domain_rand.randomize_base_inertia:
+            rng_inertia_xx = self.cfg.domain_rand.added_inertia_range_xx
+            rng_inertia_xy = self.cfg.domain_rand.added_inertia_range_xy
+            rng_inertia_xz = self.cfg.domain_rand.added_inertia_range_xz
+            rng_inertia_yy = self.cfg.domain_rand.added_inertia_range_yy
+            rng_inertia_zz = self.cfg.domain_rand.added_inertia_range_zz
+            rand_xx = np.random.uniform(rng_inertia_xx[0], rng_inertia_xx[1], size=(1, ))
+            rand_xy = np.random.uniform(rng_inertia_xy[0], rng_inertia_xy[1], size=(1, ))
+            rand_xz = np.random.uniform(rng_inertia_xz[0], rng_inertia_xz[1], size=(1, ))
+            rand_yy = np.random.uniform(rng_inertia_yy[0], rng_inertia_yy[1], size=(1, ))
+            rand_zz = np.random.uniform(rng_inertia_zz[0], rng_inertia_zz[1], size=(1, ))
+            rand_inertia = np.concatenate([rand_xx,rand_xy,rand_xz,rand_yy,np.array([0]),rand_zz])
+            rand_inertia_matrix = gymapi.Mat33() #Mat33 style
+            rand_inertia_matrix.x = gymapi.Vec3(rand_inertia[0],rand_inertia[1],rand_inertia[2])
+            rand_inertia_matrix.y = gymapi.Vec3(rand_inertia[1],rand_inertia[3],rand_inertia[4])
+            rand_inertia_matrix.z = gymapi.Vec3(rand_inertia[2],rand_inertia[4],rand_inertia[5])
+            props[0].inertia.x += rand_inertia_matrix.x
+            props[0].inertia.y += rand_inertia_matrix.y
+            props[0].inertia.z += rand_inertia_matrix.z
+        else:
+            rand_inertia = np.zeros(6)
+
+        mass_params = np.concatenate([rand_mass, rand_com,rand_inertia])
+        leg_params =  np.concatenate([rand_leg_mass,rand_leg_com])
+        return props, mass_params, leg_params
     
     def _post_physics_step_callback(self):
         """ Callback called before computing terminations, rewards, and observations
@@ -609,7 +672,26 @@ class LeggedRobot(BaseTask):
             device=self.device,
             requires_grad=False)
         self.motor_offsets = torch.zeros(self.num_envs,self.num_dof,dtype=torch.float, device=self.device, requires_grad=False)
-        
+        if self.cfg.domain_rand.randomize_action_delay:
+            action_delay_idx = torch.round(
+                torch_rand_float(
+                    self.cfg.domain_rand.delay_ms_range[0] / 1000 / self.sim_params.dt,
+                    self.cfg.domain_rand.delay_ms_range[1] / 1000 / self.sim_params.dt,
+                    (self.num_envs, 1),
+                    device=self.device,
+                )
+            ).squeeze(-1)
+            self.action_delay_idx = action_delay_idx.long()
+            delay_max = np.int64(
+                np.ceil(self.cfg.domain_rand.delay_ms_range[1] / 1000 / self.sim_params.dt)
+            )
+            self.action_fifo = torch.zeros(
+                (self.num_envs, delay_max, self.cfg.env.num_actions),
+                dtype=torch.float,
+                device=self.device,
+                requires_grad=False,
+            )
+
         self.default_dof_pos = torch.zeros(self.num_dof, dtype=torch.float, device=self.device, requires_grad=False)
         self.hip_joint_indices = torch.zeros(self.num_dof, dtype=torch.bool, device=self.device,requires_grad=False)
         self.wheel_joint_indices = torch.zeros(self.num_dof, dtype=torch.bool, device=self.device,requires_grad=False)
@@ -790,6 +872,8 @@ class LeggedRobot(BaseTask):
         env_upper = gymapi.Vec3(0., 0., 0.)
         self.actor_handles = []
         self.envs = []
+        self.mass_params_tensor = torch.zeros(self.num_envs, 10, dtype=torch.float, device=self.device, requires_grad=False)
+        self.leg_params_tensor = torch.zeros(self.num_envs, 4, dtype=torch.float, device=self.device, requires_grad=False)
         wheel_colors = [
             gymapi.Vec3(0.8, 0.2, 0.2),  # 红 - FL
             gymapi.Vec3(0.2, 0.8, 0.2),  # 绿 - RL
@@ -809,7 +893,7 @@ class LeggedRobot(BaseTask):
             dof_props = self._process_dof_props(dof_props_asset, i)
             self.gym.set_actor_dof_properties(env_handle, actor_handle, dof_props)
             body_props = self.gym.get_actor_rigid_body_properties(env_handle, actor_handle)
-            body_props = self._process_rigid_body_props(body_props, i)
+            body_props,mass_params,leg_params = self._process_rigid_body_props(body_props, i)
             self.gym.set_actor_rigid_body_properties(env_handle, actor_handle, body_props, recomputeInertia=True)
                         # 给当前 env 的四个轮子分别上不同颜色
             for idx, body_name in enumerate(thigh_names):
@@ -821,7 +905,9 @@ class LeggedRobot(BaseTask):
                     )
             self.envs.append(env_handle)
             self.actor_handles.append(actor_handle)
-
+            self.mass_params_tensor[i, :] = torch.from_numpy(mass_params).to(self.device).to(torch.float)
+            self.leg_params_tensor[i, :] = torch.from_numpy(leg_params).to(self.device).to(torch.float)
+        
         self.feet_indices = torch.zeros(len(feet_names), dtype=torch.long, device=self.device, requires_grad=False)
         for i in range(len(feet_names)):
             self.feet_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0], self.actor_handles[0], feet_names[i])
