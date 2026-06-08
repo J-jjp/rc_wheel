@@ -75,7 +75,8 @@ def play(args):
     print(obs,obs_history,privileged_obs)
     # load policy
     train_cfg.runner.resume = True
-    ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args, train_cfg=train_cfg)
+    path1 ="/home/ubuntu/isaac/new_rc/legged_gym/logs/rough_M20/Jun06_15-50-39_/model_8000.pt"
+    ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args, train_cfg=train_cfg,train_path=path1)
     policy = ppo_runner.get_inference_policy(device=env.device)
     rospy.init_node('play')
     rospy.Subscriber('/joy', Joy, joy_callback, queue_size=10)

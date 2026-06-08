@@ -38,7 +38,7 @@ from legged_gym.utils import get_args, task_registry
 import torch
 
 def train(args):
-    path_1 = "/home/ubuntu/isaac/new_rc/legged_gym/logs/rough_M20/Jun06_13-26-39_/model_4000.pt"
+    path_1 = "/home/ubuntu/isaac/new_rc/legged_gym/logs/rough_M20/Jun06_20-44-15_/model_4000.pt"
     
     env, env_cfg = task_registry.make_env(name=args.task, args=args)
     ppo_runner, train_cfg = task_registry.make_alg_runner(
